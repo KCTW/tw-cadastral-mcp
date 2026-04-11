@@ -230,7 +230,7 @@ server.tool(
               {
                 district: result.district,
                 landOffice: result.landOffice,
-                section: `${result.sectionCode} ${result.section}`,
+                section: result.section,
                 lotNumber: result.lotNumber,
                 area: result.area,
                 currentValue: result.currentValue,
