@@ -50,6 +50,56 @@ List all land sections for a city/township. Useful when you don't know the exact
 | `city` | County/city | `桃園市` |
 | `town` | Township/district | `大園區` |
 
+## Examples
+
+### Query a land parcel in Taoyuan
+
+```
+> query_land city=桃園市 town=大園區 section=福隆段 lot_number=26
+
+{
+  "district": "桃園市 大園區",
+  "landOffice": "蘆竹地政事務所",
+  "section": "0898 福隆段",
+  "lotNumber": "00260000",
+  "area": "5621.99 平方公尺",
+  "currentValue": "54600 元/平方公尺",
+  "announcedPrice": "11200 元/平方公尺",
+  "landRef": "無資料"
+}
+```
+
+### Query a parcel in Taipei
+
+```
+> query_land city=臺北市 town=中山區 section=吉林段三小段 lot_number=1
+
+{
+  "district": "臺北市 中山區",
+  "landOffice": "中山地政事務所",
+  "section": "0416 吉林段三小段",
+  "lotNumber": "00010000",
+  "area": "2398.0 平方公尺",
+  "currentValue": "892000 元/平方公尺",
+  "announcedPrice": "235000 元/平方公尺",
+  "landRef": "道路用地(公共設施用地)。"
+}
+```
+
+### Find available sections in a district
+
+```
+> list_sections city=桃園市 town=大園區
+
+[
+  { "name": "三民段", "code": "0894" },
+  { "name": "三石段", "code": "0895" },
+  { "name": "大園段", "code": "0053" },
+  { "name": "福隆段", "code": "0898" },
+  ...
+]
+```
+
 ## Setup
 
 ### Prerequisites
