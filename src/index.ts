@@ -170,8 +170,16 @@ async function queryByAddress(address: string): Promise<AddressQueryResult> {
   const page = await b.newPage();
   page.setDefaultTimeout(PAGE_TIMEOUT);
 
+  // Block only heavy binary/map resources; keep ALL scripts + stylesheets.
+  await page.route("**/*", (route) => {
+    const req = route.request();
+    const type = req.resourceType();
+    if (type === "image" || type === "media" || type === "font") return route.abort();
+    return route.continue();
+  });
+
   try {
-    await page.goto(EASYMAP_URL, { waitUntil: "load" });
+    await page.goto(EASYMAP_URL, { waitUntil: "domcontentloaded" });
 
     const closeBtn = page.getByRole("button", { name: "我已瞭解" });
     if (await closeBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
