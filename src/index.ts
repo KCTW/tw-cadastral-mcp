@@ -5,7 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { chromium, type Browser, type Page } from "playwright";
 
-const EASYMAP_URL = "https://easymap.land.moi.gov.tw/Z10Web/Normal";
+const EASYMAP_URL = "https://easymap.moi.gov.tw/Z10Web/Normal";
 const PAGE_TIMEOUT = 30_000;
 
 let browser: Browser | null = null;
@@ -152,6 +152,126 @@ async function queryLandParcel(
   }
 }
 
+interface AddressQueryResult {
+  address: string;
+  district: string;
+  landOffice: string;
+  section: string;
+  lotNumber: string;
+  area: string;
+  currentValue: string;
+  announcedPrice: string;
+  landRef: string;
+  raw: string;
+}
+
+async function queryByAddress(address: string): Promise<AddressQueryResult> {
+  const b = await getBrowser();
+  const page = await b.newPage();
+  page.setDefaultTimeout(PAGE_TIMEOUT);
+
+  try {
+    await page.goto(EASYMAP_URL, { waitUntil: "load" });
+
+    const closeBtn = page.getByRole("button", { name: "我已瞭解" });
+    if (await closeBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await closeBtn.click();
+    }
+
+    // Wait for the doorplate tab and its search handler to be attached.
+    await page.waitForSelector("#doorplate-tab", { timeout: 15_000 });
+    await page.waitForFunction(
+      () => {
+        const btn = document.getElementById("doorplateSearch") as HTMLElement | null;
+        if (!btn) return false;
+        // jQuery attaches handler via $(...).on('click') — check event data
+        const $ = (window as any).jQuery || (window as any).$;
+        if (!$) return true; // fallback: assume ready
+        const evs = $._data?.(btn, "events");
+        return !!evs?.click?.length;
+      },
+      undefined,
+      { timeout: 15_000 }
+    ).catch(() => { /* best-effort */ });
+
+    // Switch to 門牌地址 tab
+    await page.evaluate(() => {
+      const tab = document.getElementById("doorplate-tab") as HTMLElement | null;
+      tab?.click();
+    });
+    await page.waitForTimeout(300);
+
+    // Fill address via actual keyboard to trigger autocomplete handlers
+    await page.click("#roodplateText");
+    await page.fill("#roodplateText", address);
+
+    // Click search and wait for the RoadPath_ajax_detail response in parallel.
+    const [resp] = await Promise.all([
+      page.waitForResponse(
+        (r) => r.url().includes("RoadPath_ajax_detail") && r.request().method() === "POST",
+        { timeout: 30_000 }
+      ),
+      page.click("#doorplateSearch"),
+    ]);
+    if (!resp.ok()) throw new Error(`RoadPath_ajax_detail returned ${resp.status()}`);
+
+    // Now wait for the DOM to render. Result contains both 建物 and 土地 tabs;
+    // 土地 tab holds the 地號 data even when hidden.
+    await page.waitForFunction(
+      () => {
+        const c = document.getElementById("roodplateResultsListId");
+        return !!c && /地號|地段/.test(c.innerHTML);
+      },
+      undefined,
+      { timeout: 10_000 }
+    );
+
+    const result = await page.evaluate(() => {
+      const container = document.getElementById("roodplateResultsListId");
+      if (!container) return null;
+      const raw = container.innerText;
+
+      // The LAND tab table contains 地號/面積
+      const tables = container.querySelectorAll("table");
+      let data: Record<string, string> = {};
+      for (const t of tables) {
+        const rows = t.querySelectorAll("tr");
+        for (const r of rows) {
+          const th = r.querySelector("th");
+          const td = r.querySelector("td");
+          if (th && td) {
+            const key = (th.textContent ?? "").trim();
+            const val = (td.textContent ?? "").trim();
+            if (key && val && !data[key]) data[key] = val;
+          }
+        }
+      }
+
+      // Extract returned address from the result header
+      const addrMatch = raw.match(/查詢結果門牌:\s*\n?\s*(.+)/);
+      return {
+        address: addrMatch?.[1]?.trim() ?? "",
+        district: data["行政區"] ?? "",
+        landOffice: data["地政事務所"] ?? "",
+        section: data["地段"] ?? "",
+        lotNumber: data["地號"] ?? "",
+        area: data["面積"] ?? "",
+        currentValue: data["公告現值"] ?? "",
+        announcedPrice: data["公告地價"] ?? "",
+        landRef: data["土地參考資訊"] ?? "",
+        raw,
+      };
+    });
+
+    if (!result || !result.lotNumber) {
+      throw new Error("No results for address. Try a different format (e.g. '臺北市內湖區新湖一路36巷50號').");
+    }
+    return result;
+  } finally {
+    await page.close();
+  }
+}
+
 interface SectionItem {
   name: string;
   code: string;
@@ -267,6 +387,46 @@ server.tool(
           {
             type: "text" as const,
             text: JSON.stringify(sections, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
+  "query_by_address",
+  "Query Taiwan land parcel by full address (門牌地址). Returns the matching lot number (地號), section (地段), area, and announced land value. Use this when the user provides an address but not a lot number. Accepts addresses like '臺北市內湖區新湖一路36巷50號'. Do not include 村/里/鄰.",
+  {
+    address: z.string().describe("Full Taiwan street address, e.g. '臺北市內湖區新湖一路36巷50號'"),
+  },
+  async ({ address }) => {
+    try {
+      const result = await queryByAddress(address);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                address: result.address,
+                district: result.district,
+                landOffice: result.landOffice,
+                section: result.section,
+                lotNumber: result.lotNumber,
+                area: result.area,
+                currentValue: result.currentValue,
+                announcedPrice: result.announcedPrice,
+                landRef: result.landRef,
+              },
+              null,
+              2
+            ),
           },
         ],
       };
