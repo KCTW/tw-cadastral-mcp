@@ -213,15 +213,59 @@ async function queryByAddress(address: string): Promise<AddressQueryResult> {
     await page.click("#roodplateText");
     await page.fill("#roodplateText", address);
 
-    // Click search and wait for the RoadPath_ajax_detail response in parallel.
-    const [resp] = await Promise.all([
-      page.waitForResponse(
-        (r) => r.url().includes("RoadPath_ajax_detail") && r.request().method() === "POST",
-        { timeout: 30_000 }
-      ),
-      page.click("#doorplateSearch"),
-    ]);
-    if (!resp.ok()) throw new Error(`RoadPath_ajax_detail returned ${resp.status()}`);
+    // Wait for autocomplete dropdown to populate
+    await page.waitForFunction(
+      () => (document.querySelector(".xdsoft_autocomplete_dropdown")?.children?.length ?? 0) > 0,
+      undefined,
+      { timeout: 8_000 }
+    ).catch(() => { /* no dropdown — will fall back to button click */ });
+
+    // Get candidate list; pick exact match or first one, then refill input with
+    // that canonical text (which is what the search button expects to get a result).
+    const pick = await page.evaluate((userInput: string) => {
+      const dropdown = document.querySelector(".xdsoft_autocomplete_dropdown");
+      const items = dropdown ? (Array.from(dropdown.children) as HTMLElement[]) : [];
+      const candidates = items.map((el) => (el.textContent ?? "").trim());
+      if (!candidates.length) return { canonical: null as string | null, candidates };
+      const normalize = (s: string) =>
+        s.replace(/[\uFF10-\uFF19]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+          .replace(/[台臺]/g, "臺")
+          .replace(/\s+/g, "");
+      const target = normalize(userInput);
+      const exact = candidates.find((c) => normalize(c) === target);
+      return { canonical: exact ?? candidates[0], candidates };
+    }, address);
+
+    if (pick.canonical) {
+      await page.fill("#roodplateText", pick.canonical);
+    }
+    await page.click("#doorplateSearch");
+
+    // Wait for the first detail POST to fire
+    const firstResp = await page.waitForResponse(
+      (r) => r.url().includes("RoadPath_ajax_detail") && r.request().method() === "POST",
+      { timeout: 20_000 }
+    );
+    if (!firstResp.ok()) throw new Error(`RoadPath_ajax_detail returned ${firstResp.status()}`);
+
+    // Server may return a multi-building disambiguation list. If so, click the
+    // first result which fires a second RoadPath_ajax_detail POST with {seq}.
+    await page.waitForTimeout(500);
+    const needsDisambig = await page.evaluate(
+      () => !!document.querySelector('#roodplateResultsListId [role="result"]')
+    );
+    if (needsDisambig) {
+      await Promise.all([
+        page.waitForResponse(
+          (r) => r.url().includes("RoadPath_ajax_detail") && r.request().method() === "POST",
+          { timeout: 20_000 }
+        ),
+        page.evaluate(() => {
+          const el = document.querySelector('#roodplateResultsListId [role="result"]') as HTMLElement | null;
+          el?.click();
+        }),
+      ]);
+    }
 
     // Now wait for the DOM to render. Result contains both 建物 and 土地 tabs;
     // 土地 tab holds the 地號 data even when hidden.
